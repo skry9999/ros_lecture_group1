@@ -32,5 +32,5 @@ class ExceptionState(State):
     def execute(self, blackboard: Blackboard) -> str:
         """Handle an exception path."""
         del blackboard
-        yasmin.YASMIN_LOG_ERROR('An exception occurred')
+        self.node.get_logger.info('An exception occurred')
         return NEXT
