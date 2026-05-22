@@ -47,8 +47,8 @@ def main(args=None) -> None:
         'FaceRecognition',
         FaceRecognitionState(node),
         transitions={
-            TARGET_FOUND: 'Navigation',
-            TARGET_NOT_FOUND: 'Navigation',
+            "navigation": 'Navigation',
+            "patrol": '`Patrol',
             EXCEPT: 'Exception',
         },
     )
