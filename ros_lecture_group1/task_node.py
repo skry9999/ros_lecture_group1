@@ -82,13 +82,12 @@ def main(args=None) -> None:
     )
 
     sm.set_start_state('Nanpa')
-
-    viewer = YasminViewerPub(
-        sm,
-        'ros_lecture_group1_state_machine',
-        rate=4,
-        node=node,
-    )
+    # viewer = YasminViewerPub(
+    #     sm,
+    #     'ros_lecture_group1_state_machine',
+    #     rate=4,
+    #     node=node,
+    # )
 
     try:
         outcome = sm()
@@ -97,7 +96,7 @@ def main(args=None) -> None:
         if sm.is_running():
             sm.cancel_state()
     finally:
-        viewer.cleanup()
+        # viewer.cleanup()
         del sm
         node.destroy_node()
         if rclpy.ok():
