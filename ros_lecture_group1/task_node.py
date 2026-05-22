@@ -81,7 +81,7 @@ def main(args=None) -> None:
         transitions={NEXT: EXIT},
     )
 
-    sm.set_start_state('Navigation')
+    sm.set_start_state('Nanpa')
 
     viewer = YasminViewerPub(
         sm,
