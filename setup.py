@@ -22,6 +22,7 @@ setup(
         'console_scripts': [
             'sm_main = ros_lecture_group1.sm_main:main',
             'task_node = ros_lecture_group1.task_node:main',
+            'service =ros_lecture_group1.state_machine.service:main'
         ],
     },
 )

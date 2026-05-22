@@ -5,7 +5,6 @@ import threading
 import time
 
 import rclpy
-import yasmin
 
 from flask import Flask
 
@@ -31,8 +30,10 @@ app = Flask(__name__)
 global_node = None
 
 
-@app.route("/completed", methods=["POST"])
+@app.route("/completed", methods=["GET", "POST"])
 def completed():
+
+    print("completed accessed")
 
     global global_node
 
@@ -118,6 +119,10 @@ class NanpaState(State):
     def listener_callback(self, msg):
 
         raw_data = msg.data
+
+        self.node.get_logger().info(
+            f"受信: {raw_data}"
+        )
 
         if raw_data.startswith("completed"):
 
@@ -223,7 +228,6 @@ class NanpaState(State):
         self.node.get_logger().info(
             "ナンパ成功"
         )
-
         self.node.get_logger().info(
             f"user: {self.qr_data}"
         )
@@ -248,11 +252,16 @@ class NanpaState(State):
 # ==========================================================
 
 def run_flask():
-
     app.run(
-        host="192.168.11.2",
-        port=5000
+        host="0.0.0.0",
+        port=5000,
+        debug=True,
+        use_reloader=False
     )
+    # app.run(
+    #     host="0.0.0.0",
+    #     port=5000
+    # )
 
 
 # ==========================================================
@@ -277,6 +286,8 @@ def main():
 
     flask_thread.start()
 
+    time.sleep(2)
+
     # State作成
     state = NanpaState(node)
 
@@ -289,6 +300,34 @@ def main():
     print(outcome)
 
     rclpy.shutdown()
+    # global global_node
+
+    # rclpy.init()
+
+    # node = Node("nanpa_node")
+
+    # global_node = node
+
+    # # Flask起動
+    # flask_thread = threading.Thread(
+    #     target=run_flask,
+    #     daemon=True
+    # )
+
+    # flask_thread.start()
+
+    # # State作成
+    # state = NanpaState(node)
+
+    # blackboard = Blackboard()
+
+    # outcome = state.execute(
+    #     blackboard
+    # )
+
+    # print(outcome)
+
+    # rclpy.shutdown()
 
 
 if __name__ == "__main__":
