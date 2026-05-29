@@ -1,0 +1,9 @@
+task_node:
+  ros__parameters:
+    navigation:
+      action_name: /navigate_to_pose
+      frame_id: map
+      timeout_sec: 30.0
+      seats_json: '{}'
+      default_route_json: '[]'
+      default_goal_json: '{"id": "home", "x": 0.0, "y": 0.0, "yaw": 0.0}'
