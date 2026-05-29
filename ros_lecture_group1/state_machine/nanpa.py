@@ -28,6 +28,7 @@ from std_srvs.srv import Trigger
 app = Flask(__name__)
 
 global_node = None
+_flask_started = False
 
 
 @app.route("/completed", methods=["GET", "POST"])
@@ -71,6 +72,15 @@ class NanpaState(State):
         )
 
         self.node = node
+
+        # global_node をセット & Flask を起動（未起動の場合のみ）
+        global global_node, _flask_started
+        global_node = node
+        if not _flask_started:
+            _flask_started = True
+            flask_thread = threading.Thread(target=run_flask, daemon=True)
+            flask_thread.start()
+            time.sleep(1)
 
         self.scan_completed = False
         self.qr_data = None
@@ -255,13 +265,9 @@ def run_flask():
     app.run(
         host="0.0.0.0",
         port=5000,
-        debug=True,
+        debug=False,
         use_reloader=False
     )
-    # app.run(
-    #     host="0.0.0.0",
-    #     port=5000
-    # )
 
 
 # ==========================================================
