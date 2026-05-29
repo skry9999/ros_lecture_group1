@@ -5,7 +5,6 @@ import rclpy
 import yasmin
 from yasmin import StateMachine
 from yasmin_ros import set_ros_loggers
-from yasmin_viewer import YasminViewerPub
 
 from ros_lecture_group1.state_machine.face_recognition import (
     FaceRecognitionState,
@@ -14,13 +13,13 @@ from ros_lecture_group1.state_machine.nanpa import NanpaState
 from ros_lecture_group1.state_machine.navigation import NavigationState
 from ros_lecture_group1.state_machine.outcomes import EXCEPT
 from ros_lecture_group1.state_machine.outcomes import EXIT
+from ros_lecture_group1.state_machine.outcomes import FACE_RECOGNITION
+from ros_lecture_group1.state_machine.outcomes import NANPA
 from ros_lecture_group1.state_machine.outcomes import NANPA_FAILED
 from ros_lecture_group1.state_machine.outcomes import NANPA_SUCCESS
 from ros_lecture_group1.state_machine.outcomes import NEXT
 from ros_lecture_group1.state_machine.outcomes import NEXT_TARGET
 from ros_lecture_group1.state_machine.outcomes import NO_TARGETS
-from ros_lecture_group1.state_machine.outcomes import TARGET_FOUND
-from ros_lecture_group1.state_machine.outcomes import TARGET_NOT_FOUND
 from ros_lecture_group1.state_machine.patrol import PatrolState
 from ros_lecture_group1.state_machine.standard import ExceptionState
 from ros_lecture_group1.state_machine.standard import FinishState
@@ -31,7 +30,7 @@ def main(args=None) -> None:
     yasmin.YASMIN_LOG_INFO('Starting ros_lecture_group1 state machine')
 
     rclpy.init(args=args)
-    node = rclpy.create_node('ros_lecture_group1_state_machine')
+    node = rclpy.create_node('task_node')
     set_ros_loggers(node)
 
     sm = StateMachine(outcomes=[EXIT])
@@ -39,7 +38,8 @@ def main(args=None) -> None:
         'Navigation',
         NavigationState(node),
         transitions={
-            NEXT: 'FaceRecognition',
+            FACE_RECOGNITION: 'FaceRecognition',
+            NANPA: 'Nanpa',
             EXCEPT: 'Exception',
         },
     )
@@ -47,8 +47,8 @@ def main(args=None) -> None:
         'FaceRecognition',
         FaceRecognitionState(node),
         transitions={
-            "navigation": 'Navigation',
-            "patrol": '`Patrol',
+            NEXT: 'Navigation',
+            "patrol": 'Patrol',
             EXCEPT: 'Exception',
         },
     )
@@ -56,7 +56,7 @@ def main(args=None) -> None:
         'Patrol',
         PatrolState(node),
         transitions={
-            NEXT_TARGET: 'Nanpa',
+            NEXT_TARGET: 'Navigation',
             NO_TARGETS: 'Finish',
             EXCEPT: 'Exception',
         },
@@ -81,13 +81,7 @@ def main(args=None) -> None:
         transitions={NEXT: EXIT},
     )
 
-    sm.set_start_state('Nanpa')
-    # viewer = YasminViewerPub(
-    #     sm,
-    #     'ros_lecture_group1_state_machine',
-    #     rate=4,
-    #     node=node,
-    # )
+    sm.set_start_state('Navigation')
 
     try:
         outcome = sm()
@@ -96,7 +90,6 @@ def main(args=None) -> None:
         if sm.is_running():
             sm.cancel_state()
     finally:
-        # viewer.cleanup()
         del sm
         node.destroy_node()
         if rclpy.ok():

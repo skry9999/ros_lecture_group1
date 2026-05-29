@@ -1,5 +1,6 @@
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool
 from cv_bridge import CvBridge
@@ -9,10 +10,14 @@ class PCMonitorNode(Node):
     def __init__(self):
         super().__init__('pc_monitor_node')
         self.bridge = CvBridge()
+        self.latest_image = None
         
         # ロボットから画像を受け取るSubscriber
         self.image_sub = self.create_subscription(
-            msg_type=Image, topic="image_to_smartphone", callback=self.image_callback, qos_profile=10
+            msg_type=Image,
+            topic="image_to_smartphone",
+            callback=self.image_callback,
+            qos_profile=qos_profile_sensor_data,
         )
         
         # ロボットへ判断を送るPublisher
@@ -23,18 +28,16 @@ class PCMonitorNode(Node):
         self.get_logger().info('PCモニターを起動しました。画像を受信待機中...')
 
     def image_callback(self, msg):
-        # 画像をOpenCV形式に変換して画面に表示
-        cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        cv2.imshow("Robot Camera (Press 'y' for True, 'n' for False)", cv_image)
-        
-        # キーボード入力を1ミリ秒待つ
-        key = cv2.waitKey(1) & 0xFF
-        
-        # 'y' キーが押されたら True を送信
+        self.latest_image = msg
+
+    def update_window(self):
+        if self.latest_image is not None:
+            cv_image = self.bridge.imgmsg_to_cv2(self.latest_image, "bgr8")
+            cv2.imshow("Robot Camera (Press 'y' for True, 'n' for False)", cv_image)
+
+        key = cv2.waitKey(30) & 0xFF
         if key == ord('y'):
             self.send_judgment(True)
-            
-        # 'n' キーが押されたら False を送信
         elif key == ord('n'):
             self.send_judgment(False)
 
@@ -42,6 +45,7 @@ class PCMonitorNode(Node):
         msg = Bool()
         msg.data = result
         self.judgment_pub.publish(msg)
+        self.latest_image = None
         
         # 送信したら画面を閉じる（次の画像が来るまで）
         cv2.destroyAllWindows()
@@ -52,10 +56,14 @@ class PCMonitorNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = PCMonitorNode()
-    rclpy.spin(node)
-    node.destroy_node()
-    cv2.destroyAllWindows()
-    rclpy.shutdown()
+    try:
+        while rclpy.ok():
+            rclpy.spin_once(node, timeout_sec=0.1)
+            node.update_window()
+    finally:
+        node.destroy_node()
+        cv2.destroyAllWindows()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

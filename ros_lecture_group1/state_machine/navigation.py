@@ -4,6 +4,7 @@
 
 import json
 import math
+import time
 from typing import Any
 
 import rclpy
@@ -24,7 +25,8 @@ from yasmin import Blackboard
 from yasmin import State
 
 from ros_lecture_group1.state_machine.outcomes import EXCEPT
-from ros_lecture_group1.state_machine.outcomes import NEXT
+from ros_lecture_group1.state_machine.outcomes import FACE_RECOGNITION
+from ros_lecture_group1.state_machine.outcomes import NANPA
 
 
 class NavigationState(State):
@@ -32,7 +34,7 @@ class NavigationState(State):
 
     def __init__(self, node: Node):
         """NavigationStateを初期化する。"""
-        super().__init__(outcomes=[NEXT, EXCEPT])
+        super().__init__(outcomes=[FACE_RECOGNITION, NANPA, EXCEPT])
         self.node = node
 
         self._goal_handle: ClientGoalHandle | None = None
@@ -50,10 +52,20 @@ class NavigationState(State):
         self.timeout_sec = float(
             self._get_parameter('navigation.timeout_sec'),
         )
+        self.action_server_timeout_sec = float(
+            self._get_parameter('navigation.action_server_timeout_sec'),
+        )
+        self.goal_response_timeout_sec = float(
+            self._get_parameter('navigation.goal_response_timeout_sec'),
+        )
 
         self.seats = self._load_json_parameter('navigation.seats_json', {})
         self.default_route = self._load_json_parameter(
             'navigation.default_route_json',
+            [],
+        )
+        self.scan_route = self._load_json_parameter(
+            'navigation.scan_route_json',
             [],
         )
         self.default_goal = self._load_json_parameter(
@@ -101,8 +113,11 @@ class NavigationState(State):
             'navigation.action_name': '/navigate_to_pose',
             'navigation.frame_id': 'map',
             'navigation.timeout_sec': 30.0,
+            'navigation.action_server_timeout_sec': 10.0,
+            'navigation.goal_response_timeout_sec': 10.0,
             'navigation.seats_json': '{}',
             'navigation.default_route_json': '[]',
+            'navigation.scan_route_json': '[]',
             'navigation.default_goal_json': (
                 '{"id": "home", "x": 0.0, "y": 0.0, "yaw": 0.0}'
             ),
@@ -216,20 +231,54 @@ class NavigationState(State):
             return resolved
 
         seat_id = goal.get('id') or goal.get('seat_id')
-        if seat_id and seat_id in self.seats:
-            resolved = dict(self.seats[seat_id])
-            resolved.setdefault('id', seat_id)
+        seat_key = str(seat_id) if seat_id is not None else ''
+        if seat_key and seat_key in self.seats:
+            resolved = dict(self.seats[seat_key])
+            resolved.setdefault('id', seat_key)
             return resolved
 
         self.node.get_logger().error(f'Invalid navigation goal: {goal}')
         return None
 
-    def _make_route(self, blackboard: Blackboard) -> list[dict[str, Any]]:
+    @staticmethod
+    def _sort_seat_ids(seat_ids: list[str]) -> list[str]:
+        """数字の席IDを自然順、それ以外を辞書順に並べる。"""
+        return sorted(seat_ids, key=lambda seat_id: (
+            0,
+            int(seat_id),
+        ) if str(seat_id).isdigit() else (1, str(seat_id)))
+
+    def _scan_route_source(self, blackboard: Blackboard) -> list[Any]:
+        """顔判定で順番に回る席のリストを作る。"""
+        route_source = (
+            self._blackboard_get(blackboard, 'scan_route', None)
+            or self.scan_route
+        )
+        if route_source:
+            if isinstance(route_source, (str, dict)):
+                return [route_source]
+            return list(route_source)
+
+        if self.seats:
+            return self._sort_seat_ids([str(seat_id) for seat_id in self.seats])
+
+        if self.default_route:
+            return list(self.default_route)
+
+        return [self.default_goal]
+
+    def _make_route(
+        self,
+        blackboard: Blackboard,
+    ) -> tuple[list[dict[str, Any]], str, bool]:
         """Blackboard、Topic、パラメータから巡回経路を作成する。"""
         seats = self._blackboard_get(blackboard, 'seats', None)
         if isinstance(seats, dict):
             self.seats.update(seats)
 
+        phase = str(
+            self._blackboard_get(blackboard, 'mission_phase', 'scan'),
+        ).lower()
         route_source = (
             self._blackboard_get(blackboard, 'navigation_route', None)
             or self._blackboard_get(blackboard, 'patrol_route', None)
@@ -241,10 +290,25 @@ class NavigationState(State):
 
         if self._requested_goal:
             route_source = [self._requested_goal]
+            mode = 'external'
+            used_requested_goal = True
+        elif phase == 'patrol' and route_source:
+            mode = 'patrol'
+            used_requested_goal = False
         elif target_seat:
             route_source = [target_seat]
-        elif not route_source:
-            route_source = self.default_route or [self.default_goal]
+            mode = 'patrol'
+            used_requested_goal = False
+        else:
+            route_source = self._scan_route_source(blackboard)
+            scan_index = int(self._blackboard_get(blackboard, 'scan_index', 0))
+            if scan_index >= len(route_source):
+                return [], 'scan', False
+            self._blackboard_set(blackboard, 'scan_goal_index', scan_index)
+            self._blackboard_set(blackboard, 'scan_total', len(route_source))
+            route_source = [route_source[scan_index]]
+            mode = 'scan'
+            used_requested_goal = False
 
         if isinstance(route_source, (str, dict)):
             route_source = [route_source]
@@ -254,7 +318,7 @@ class NavigationState(State):
             resolved = self._resolve_goal(goal)
             if resolved:
                 route.append(resolved)
-        return route
+        return route, mode, used_requested_goal
 
     def go_to_pose(self, goal: dict[str, Any]) -> bool:
         """指定した目的地までナビゲーションを開始する。"""
@@ -265,7 +329,18 @@ class NavigationState(State):
         self.node.get_logger().debug(
             "Waiting for 'NavigateToPose' action server",
         )
+        wait_start = time.time()
         while not self.nav_to_pose_client.wait_for_server(timeout_sec=1.0):
+            elapsed_sec = time.time() - wait_start
+            if (
+                self.action_server_timeout_sec > 0
+                and elapsed_sec > self.action_server_timeout_sec
+            ):
+                self.node.get_logger().error(
+                    "'NavigateToPose' action server not available.",
+                )
+                self._publish_status('action_server_unavailable')
+                return False
             self.node.get_logger().info(
                 "'NavigateToPose' action server not available, waiting...",
             )
@@ -295,7 +370,15 @@ class NavigationState(State):
             goal=goal_msg,
             feedback_callback=self._feedback_callback,
         )
-        rclpy.spin_until_future_complete(self.node, send_goal_future)
+        rclpy.spin_until_future_complete(
+            self.node,
+            send_goal_future,
+            timeout_sec=self.goal_response_timeout_sec,
+        )
+        if not send_goal_future.done():
+            self.node.get_logger().error('Timed out waiting for goal response.')
+            self._publish_status('goal_response_timeout')
+            return False
 
         self._goal_handle = send_goal_future.result()
         if not self._goal_handle.accepted:
@@ -315,7 +398,15 @@ class NavigationState(State):
         if self._result_future and self._goal_handle:
             self.node.get_logger().info('Canceling current navigation.')
             future = self._goal_handle.cancel_goal_async()
-            rclpy.spin_until_future_complete(self.node, future)
+            rclpy.spin_until_future_complete(
+                self.node,
+                future,
+                timeout_sec=2.0,
+            )
+            if not future.done():
+                self.node.get_logger().warning(
+                    'Timed out waiting for navigation cancel response.',
+                )
 
     def is_nav_complete(self) -> bool:
         """ナビゲーションの完了状態を返す。"""
@@ -361,10 +452,18 @@ class NavigationState(State):
 
     def _wait_until_goal_finished(self) -> bool:
         """Nav2 goalの完了、停止指示、タイムアウトを監視する。"""
+        start_time = time.time()
         while not self.is_nav_complete():
             if self._requested_stop:
                 self.cancel_nav()
                 self._publish_status('stopped')
+                return False
+
+            elapsed_wall = time.time() - start_time
+            if math.isfinite(self.timeout_sec) and elapsed_wall > self.timeout_sec:
+                self.node.get_logger().error('Navigation timed out.')
+                self.cancel_nav()
+                self._publish_status('timeout')
                 return False
 
             feedback = self.get_feedback()
@@ -394,7 +493,25 @@ class NavigationState(State):
         }
         self._blackboard_set(blackboard, 'current_pose', current_pose)
         if seat_id:
+            visited_goals = self._blackboard_get(
+                blackboard,
+                'visited_goals',
+                {},
+            )
+            if not isinstance(visited_goals, dict):
+                visited_goals = {}
+            visited_goals[seat_id] = {
+                'id': seat_id,
+                **current_pose,
+            }
+            self._blackboard_set(blackboard, 'visited_goals', visited_goals)
             self._blackboard_set(blackboard, 'current_seat_id', seat_id)
+            if seat_id.isdigit():
+                self._blackboard_set(
+                    blackboard,
+                    'current_seat_number',
+                    int(seat_id),
+                )
             self._publish_current_seat(seat_id)
 
     def execute(self, blackboard: Blackboard) -> str:
@@ -415,8 +532,10 @@ class NavigationState(State):
             return EXCEPT
 
         self._requested_stop = False
-        route = self._make_route(blackboard)
+        route, mode, used_requested_goal = self._make_route(blackboard)
         if not route:
+            if used_requested_goal:
+                self._requested_goal = None
             self.node.get_logger().error('No navigation route is available.')
             self._publish_status('no_route')
             return EXCEPT
@@ -424,6 +543,8 @@ class NavigationState(State):
         self._blackboard_set(blackboard, 'navigation_route', route)
         for goal in route:
             if not self.go_to_pose(goal):
+                if used_requested_goal:
+                    self._requested_goal = None
                 self._blackboard_set(blackboard, 'navigation_result', 'failed')
                 return EXCEPT
 
@@ -434,13 +555,37 @@ class NavigationState(State):
                     'navigation_result',
                     f'failed:{result}',
                 )
+                if used_requested_goal:
+                    self._requested_goal = None
                 return EXCEPT
 
             self._save_arrival(blackboard, goal)
 
+        if used_requested_goal:
+            self._requested_goal = None
+
         self._blackboard_set(blackboard, 'navigation_result', 'succeeded')
         self._publish_status('succeeded')
-        return NEXT
+
+        if mode == 'patrol':
+            self._blackboard_set(blackboard, 'mission_phase', 'patrol')
+            self._blackboard_set(blackboard, 'target_seat_id', None)
+            self._blackboard_set(blackboard, 'patrol_route', None)
+            self._blackboard_set(blackboard, 'navigation_route', None)
+            return NANPA
+
+        scan_index = int(self._blackboard_get(blackboard, 'scan_goal_index', 0))
+        scan_source = self._scan_route_source(blackboard)
+        next_scan_index = scan_index + 1
+        self._blackboard_set(blackboard, 'scan_index', next_scan_index)
+        self._blackboard_set(
+            blackboard,
+            'scan_is_last',
+            next_scan_index >= len(scan_source),
+        )
+        self._blackboard_set(blackboard, 'mission_phase', 'scan')
+        self._blackboard_set(blackboard, 'navigation_route', None)
+        return FACE_RECOGNITION
 
     def goToPose(self, x: float, y: float, yaw: float) -> bool:
         """提供サンプルと同じ引数で目的地へ移動する。"""

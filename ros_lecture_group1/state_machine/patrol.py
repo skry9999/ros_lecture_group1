@@ -54,6 +54,32 @@ class PatrolState(State):
         """現在位置を更新する"""
         self.current_pose = msg.pose.pose
 
+    @staticmethod
+    def _blackboard_get(
+        blackboard: Blackboard,
+        key: str,
+        default=None,
+    ):
+        """Blackboardから値を取得する。"""
+        if hasattr(blackboard, 'get'):
+            return blackboard.get(key, default)
+        try:
+            return blackboard[key]
+        except (KeyError, TypeError):
+            return getattr(blackboard, key, default)
+
+    @staticmethod
+    def _blackboard_set(
+        blackboard: Blackboard,
+        key: str,
+        value,
+    ) -> None:
+        """Blackboardへ値を保存する。"""
+        try:
+            blackboard[key] = value
+        except TypeError:
+            setattr(blackboard, key, value)
+
     def get_closest_target_seat_id(self, target_seats: list):
         """現在位置から最も近い席IDを選び、リストから削除して返す"""
         if not target_seats:
@@ -70,6 +96,7 @@ class PatrolState(State):
 
         closest_idx = 0
         min_dist = float('inf')
+        found_valid_seat = False
 
         # 全ターゲット席との距離を計算し、最短のものを選ぶ
         for i, seat_id in enumerate(target_seats):
@@ -84,6 +111,14 @@ class PatrolState(State):
             if dist < min_dist:
                 min_dist = dist
                 closest_idx = i
+                found_valid_seat = True
+
+        if not found_valid_seat:
+            self.node.get_logger().warning(
+                "有効な座標データがないため、リストの先頭をターゲットにします。"
+            )
+            closest_seat_id = target_seats.pop(0)
+            return closest_seat_id, target_seats
 
         # 選んだターゲットをリストから削除（二度同じ場所に行かないため）
         closest_seat_id = target_seats.pop(closest_idx)
@@ -96,7 +131,10 @@ class PatrolState(State):
 
         try:
             # 1. Blackboardから対象者リスト（FaceRecognitionで保存された席IDのリスト）を取得
-            target_seats = blackboard.get('target_seats', [])
+            target_seats = self._blackboard_get(blackboard, 'target_seats', [])
+            visited_goals = self._blackboard_get(blackboard, 'visited_goals', {})
+            if isinstance(visited_goals, dict):
+                self.seats.update(visited_goals)
 
             # 対象が残っていなければNO_TARGETSを返す
             if not target_seats:
@@ -111,13 +149,23 @@ class PatrolState(State):
 
             # 3. 状態をBlackboardに書き戻す
             # 削ったあとのリストを保存（次の巡回のため）
-            blackboard['target_seats'] = updated_target_seats
+            self._blackboard_set(
+                blackboard,
+                'target_seats',
+                updated_target_seats,
+            )
             
             # 次の目的地の席IDを保存（NavigationStateの target_seat_id に合わせる）
-            blackboard['target_seat_id'] = str(next_seat_id)
+            self._blackboard_set(blackboard, 'target_seat_id', str(next_seat_id))
             
             # NavigationStateが 'patrol_route' を見に行く設計になっているため、そこにも設定しておく
-            blackboard['patrol_route'] = [str(next_seat_id)]
+            self._blackboard_set(
+                blackboard,
+                'patrol_route',
+                [self.seats.get(str(next_seat_id), str(next_seat_id))],
+            )
+            self._blackboard_set(blackboard, 'mission_phase', 'patrol')
+            self._blackboard_set(blackboard, 'navigation_route', None)
 
             self.node.get_logger().info(f'Next target seat selected: {next_seat_id}. Remaining targets: {len(updated_target_seats)}')
 

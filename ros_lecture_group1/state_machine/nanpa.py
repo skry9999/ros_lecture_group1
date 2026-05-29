@@ -3,6 +3,7 @@
 
 import threading
 import time
+from werkzeug.serving import make_server
 
 import rclpy
 
@@ -29,6 +30,9 @@ app = Flask(__name__)
 
 global_node = None
 _flask_started = False
+_flask_server_ready = False
+_flask_server_error = None
+_pending_completed_data = None
 
 
 @app.route("/completed", methods=["GET", "POST"])
@@ -36,9 +40,9 @@ def completed():
 
     print("completed accessed")
 
-    global global_node
+    global global_node, _pending_completed_data
 
-    if global_node is not None:
+    if global_node is not None and hasattr(global_node, "qr_status_pub"):
 
         msg = String()
 
@@ -46,10 +50,14 @@ def completed():
         msg.data = "completed:user1"
 
         global_node.qr_status_pub.publish(msg)
+        _pending_completed_data = msg.data
 
         global_node.get_logger().info(
             "Flask: QR completed published"
         )
+
+    else:
+        _pending_completed_data = "completed:user1"
 
     return "ok"
 
@@ -73,28 +81,9 @@ class NanpaState(State):
 
         self.node = node
 
-        # global_node をセット & Flask を起動（未起動の場合のみ）
-        global global_node, _flask_started
-        global_node = node
-        if not _flask_started:
-            _flask_started = True
-            flask_thread = threading.Thread(target=run_flask, daemon=True)
-            flask_thread.start()
-            time.sleep(1)
-
         self.scan_completed = False
         self.qr_data = None
-
-        # ==================================================
-        # Subscriber
-        # ==================================================
-
-        self.subscription = self.node.create_subscription(
-            String,
-            "qr_status",
-            self.listener_callback,
-            10
-        )
+        self.pending_qr_data = None
 
         # ==================================================
         # Publisher
@@ -113,6 +102,26 @@ class NanpaState(State):
             10
         )
 
+        # global_node をセット & Flask を起動（未起動の場合のみ）
+        global global_node, _flask_started
+        global_node = node
+        if not _flask_started:
+            _flask_started = True
+            flask_thread = threading.Thread(target=run_flask, daemon=True)
+            flask_thread.start()
+            self._wait_for_flask_ready(timeout_sec=5.0)
+
+        # ==================================================
+        # Subscriber
+        # ==================================================
+
+        self.subscription = self.node.create_subscription(
+            String,
+            "qr_status",
+            self.listener_callback,
+            10
+        )
+
         # ==================================================
         # Service Client
         # ==================================================
@@ -121,6 +130,17 @@ class NanpaState(State):
             Trigger,
             "announce_nanpa_qr"
         )
+
+    def _wait_for_flask_ready(self, timeout_sec: float) -> bool:
+        """Flask serverが起動完了するまで短時間待つ。"""
+        start_time = time.time()
+        while time.time() - start_time < timeout_sec:
+            if _flask_server_ready:
+                return True
+            if _flask_server_error is not None:
+                return False
+            time.sleep(0.1)
+        return _flask_server_ready
 
     # ======================================================
     # QR Callback
@@ -151,7 +171,49 @@ class NanpaState(State):
 
                 self.qr_data = "unknown_user"
 
+            self.pending_qr_data = self.qr_data
             self.scan_completed = True
+
+    @staticmethod
+    def _blackboard_get(
+        blackboard: Blackboard,
+        key: str,
+        default=None,
+    ):
+        """Blackboardから値を取得する。"""
+        if hasattr(blackboard, 'get'):
+            return blackboard.get(key, default)
+        try:
+            return blackboard[key]
+        except (KeyError, TypeError):
+            return getattr(blackboard, key, default)
+
+    @staticmethod
+    def _blackboard_set(
+        blackboard: Blackboard,
+        key: str,
+        value,
+    ) -> None:
+        """Blackboardへ値を保存する。"""
+        try:
+            blackboard[key] = value
+        except TypeError:
+            setattr(blackboard, key, value)
+
+    def _restore_failed_target(self, blackboard: Blackboard) -> None:
+        """QR失敗時に現在の対象席をtarget_seatsへ戻す。"""
+        target_seat = self._blackboard_get(blackboard, 'current_seat_id', None)
+        if not target_seat:
+            target_seat = self._blackboard_get(blackboard, 'target_seat_id', None)
+        if not target_seat:
+            return
+
+        target_seats = self._blackboard_get(blackboard, 'target_seats', [])
+        if not isinstance(target_seats, list):
+            target_seats = []
+        if target_seat not in target_seats:
+            target_seats.insert(0, target_seat)
+        self._blackboard_set(blackboard, 'target_seats', target_seats)
 
     # ======================================================
     # Execute
@@ -167,9 +229,26 @@ class NanpaState(State):
             "QRコード読み込み待機中..."
         )
 
+        if not _flask_server_ready:
+            self.node.get_logger().error(
+                f"Flask server is not ready: {_flask_server_error}"
+            )
+            self._restore_failed_target(blackboard)
+            return EXCEPT
+
         # 初期化
-        self.scan_completed = False
-        self.qr_data = None
+        global _pending_completed_data
+        pending_data = self.pending_qr_data or _pending_completed_data
+        if pending_data is not None:
+            if str(pending_data).startswith("completed"):
+                self.qr_data = str(pending_data).split(":", 1)[1] \
+                    if ":" in str(pending_data) else "unknown_user"
+            else:
+                self.qr_data = pending_data
+            self.scan_completed = True
+        else:
+            self.scan_completed = False
+            self.qr_data = None
 
         # ==================================================
         # 案内Service
@@ -227,6 +306,7 @@ class NanpaState(State):
                     fail_msg
                 )
 
+                self._restore_failed_target(blackboard)
                 return NANPA_FAILED
 
             time.sleep(0.1)
@@ -242,9 +322,9 @@ class NanpaState(State):
             f"user: {self.qr_data}"
         )
 
-        blackboard[
-            "target_user_info"
-        ] = self.qr_data
+        self._blackboard_set(blackboard, "target_user_info", self.qr_data)
+        self.pending_qr_data = None
+        _pending_completed_data = None
 
         success_msg = String()
 
@@ -262,12 +342,15 @@ class NanpaState(State):
 # ==========================================================
 
 def run_flask():
-    app.run(
-        host="0.0.0.0",
-        port=5000,
-        debug=False,
-        use_reloader=False
-    )
+    global _flask_server_ready, _flask_server_error
+    try:
+        server = make_server("0.0.0.0", 5000, app)
+        _flask_server_ready = True
+        _flask_server_error = None
+        server.serve_forever()
+    except Exception as err:
+        _flask_server_ready = False
+        _flask_server_error = err
 
 
 # ==========================================================
@@ -276,7 +359,7 @@ def run_flask():
 
 def main():
 
-    global global_node
+    global global_node, _flask_started
 
     rclpy.init()
 
@@ -291,6 +374,7 @@ def main():
     )
 
     flask_thread.start()
+    _flask_started = True
 
     time.sleep(2)
 
