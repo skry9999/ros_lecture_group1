@@ -10,7 +10,6 @@ setup(
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', ['launch/ros_lecture_group1.launch.py']),
-        ('share/' + package_name + '/config', ['config/params.yaml']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -23,6 +22,7 @@ setup(
         'console_scripts': [
             'sm_main = ros_lecture_group1.sm_main:main',
             'task_node = ros_lecture_group1.task_node:main',
+            'service =ros_lecture_group1.state_machine.service:main'
         ],
     },
 )
