@@ -5,6 +5,11 @@ task_node:
       image_timeout_sec: 15.0
       judgment_timeout_sec: 60.0
       image_republish_interval_sec: 1.0
+    nanpa_presence:
+      image_timeout_sec: 15.0
+      gemini_model: gemini-3.5-flash
+      jpeg_quality: 85
+      api_key_env: GEMINI_API_KEY
     navigation:
       action_name: /navigate_to_pose
       frame_id: map

@@ -12,7 +12,10 @@ setup(
         ('share/' + package_name + '/launch', ['launch/ros_lecture_group1.launch.py']),
         ('share/' + package_name + '/config', ['config/params.yaml']),
     ],
-    install_requires=['setuptools'],
+    install_requires=[
+        'setuptools',
+        'google-genai',
+    ],
     zip_safe=True,
     maintainer='ros_lecture_group1',
     maintainer_email='todo@example.com',
