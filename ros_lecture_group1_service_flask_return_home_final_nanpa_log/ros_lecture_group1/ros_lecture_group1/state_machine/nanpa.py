@@ -58,6 +58,9 @@ class NanpaState(State):
         self.api_key_env = str(
             self.node.get_parameter('nanpa_presence.api_key_env').value,
         )
+        self.qr_timeout_sec = float(
+            self.node.get_parameter('nanpa.qr_timeout_sec').value,
+        )
 
         # ==================================================
         # Publisher
@@ -102,6 +105,7 @@ class NanpaState(State):
             'nanpa_presence.gemini_model': 'gemini-2.5-flash',
             'nanpa_presence.jpeg_quality': 85,
             'nanpa_presence.api_key_env': 'GEMINI_API_KEY',
+            'nanpa.qr_timeout_sec': 15.0,
         }
         for name, value in defaults.items():
             if not self.node.has_parameter(name):
@@ -245,7 +249,7 @@ class NanpaState(State):
             "required": ["person_present"],
         }
         prompt = (
-            "Decide whether at least one person picture is currently visible in "
+            "Decide whether at least one person face is currently visible in "
             "this camera image. Return only the JSON object requested by the "
             "schema."
         )
@@ -305,6 +309,17 @@ class NanpaState(State):
         fail_msg.data = reason
         self.result_pub.publish(fail_msg)
 
+    def _log_large_nanpa_result(self, title: str) -> None:
+        """Nanpa結果をログで大きく目立つように表示する。"""
+        border = "=" * 72
+        side = "#" * 20
+        self.node.get_logger().info(
+            "\n"
+            f"{border}\n"
+            f"{side}        {title}        {side}\n"
+            f"{border}"
+        )
+
     # ======================================================
     # Execute
     # ======================================================
@@ -332,7 +347,7 @@ class NanpaState(State):
         self.pending_qr_data = None
 
         self.node.get_logger().info(
-            "QRコード読み込み待機中..."
+            f"QRコード読み込み待機中... timeout={self.qr_timeout_sec:.1f}s"
         )
 
         # ==================================================
@@ -363,7 +378,7 @@ class NanpaState(State):
         # QR待機
         # ==================================================
 
-        timeout_duration = 60.0
+        timeout_duration = self.qr_timeout_sec
 
         start_time = time.time()
 
@@ -380,8 +395,9 @@ class NanpaState(State):
             ) > timeout_duration:
 
                 self.node.get_logger().warn(
-                    "タイムアウト"
+                    f"QR読み込みタイムアウト: {timeout_duration:.1f}s"
                 )
+                self._log_large_nanpa_result("ナンパ失敗")
 
                 fail_msg = String()
 
@@ -400,9 +416,7 @@ class NanpaState(State):
         # Success
         # ==================================================
 
-        self.node.get_logger().info(
-            "ナンパ成功"
-        )
+        self._log_large_nanpa_result("ナンパ成功")
         self.node.get_logger().info(
             f"user: {self.qr_data}"
         )

@@ -26,6 +26,7 @@ from yasmin import State
 
 from ros_lecture_group1.state_machine.outcomes import EXCEPT
 from ros_lecture_group1.state_machine.outcomes import FACE_RECOGNITION
+from ros_lecture_group1.state_machine.outcomes import FINISH
 from ros_lecture_group1.state_machine.outcomes import NANPA
 from ros_lecture_group1.state_machine.outcomes import NEXT
 
@@ -35,7 +36,7 @@ class NavigationState(State):
 
     def __init__(self, node: Node):
         """NavigationStateを初期化する。"""
-        super().__init__(outcomes=[FACE_RECOGNITION, NANPA, NEXT, EXCEPT])
+        super().__init__(outcomes=[FACE_RECOGNITION, NANPA, NEXT, FINISH, EXCEPT])
         self.node = node
 
         self._goal_handle: ClientGoalHandle | None = None
@@ -293,6 +294,10 @@ class NavigationState(State):
             route_source = [self._requested_goal]
             mode = 'external'
             used_requested_goal = True
+        elif phase in ('final_return_home', 'return_home_final'):
+            route_source = [self.default_goal]
+            mode = 'final_return_home'
+            used_requested_goal = False
         elif phase in ('return_home', 'home', 'initial_position'):
             route_source = [self.default_goal]
             mode = 'return_home'
@@ -585,6 +590,16 @@ class NavigationState(State):
             self._blackboard_set(blackboard, 'patrol_route', None)
             self._blackboard_set(blackboard, 'navigation_route', None)
             return NEXT
+
+        if mode == 'final_return_home':
+            self.node.get_logger().info(
+                'Returned to initial position at the end of the mission.',
+            )
+            self._blackboard_set(blackboard, 'mission_phase', 'finished')
+            self._blackboard_set(blackboard, 'target_seat_id', None)
+            self._blackboard_set(blackboard, 'patrol_route', None)
+            self._blackboard_set(blackboard, 'navigation_route', None)
+            return FINISH
 
         if mode == 'patrol':
             self._blackboard_set(blackboard, 'mission_phase', 'patrol')

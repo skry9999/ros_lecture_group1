@@ -14,6 +14,7 @@ from ros_lecture_group1.state_machine.navigation import NavigationState
 from ros_lecture_group1.state_machine.outcomes import EXCEPT
 from ros_lecture_group1.state_machine.outcomes import EXIT
 from ros_lecture_group1.state_machine.outcomes import FACE_RECOGNITION
+from ros_lecture_group1.state_machine.outcomes import FINISH
 from ros_lecture_group1.state_machine.outcomes import NANPA
 from ros_lecture_group1.state_machine.outcomes import NANPA_FAILED
 from ros_lecture_group1.state_machine.outcomes import NANPA_SUCCESS
@@ -42,6 +43,7 @@ def main(args=None) -> None:
             FACE_RECOGNITION: 'FaceRecognition',
             NANPA: 'Nanpa',
             NEXT: 'WaitBeforePatrol',
+            FINISH: 'Finish',
             EXCEPT: 'Exception',
         },
     )
@@ -64,7 +66,7 @@ def main(args=None) -> None:
         PatrolState(node),
         transitions={
             NEXT_TARGET: 'Navigation',
-            NO_TARGETS: 'Finish',
+            NO_TARGETS: 'Navigation',
             EXCEPT: 'Exception',
         },
     )
@@ -88,7 +90,7 @@ def main(args=None) -> None:
         transitions={NEXT: EXIT},
     )
 
-    sm.set_start_state('Navigation')
+    sm.set_start_state('Nanpa')
 
     try:
         outcome = sm()

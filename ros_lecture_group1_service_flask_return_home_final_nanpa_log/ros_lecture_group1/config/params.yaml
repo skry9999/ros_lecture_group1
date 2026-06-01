@@ -1,6 +1,8 @@
 task_node:
   ros__parameters:
     max_seat_number: 0
+    state_machine:
+      before_patrol_wait_sec: 3.0
     face_recognition:
       image_timeout_sec: 15.0
       judgment_timeout_sec: 60.0
@@ -10,6 +12,8 @@ task_node:
       gemini_model: gemini-2.5-flash
       jpeg_quality: 85
       api_key_env: GEMINI_API_KEY
+    nanpa:
+      qr_timeout_sec: 15.0
     navigation:
       action_name: /navigate_to_pose
       frame_id: map
